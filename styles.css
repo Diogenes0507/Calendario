@@ -1,0 +1,17 @@
+/* styles.css */
+
+/*
+   La mayor parte del estilo proviene del CDN de Tailwind CSS
+   cargado en el archivo index.html.
+*/
+
+/* Reset básico (opcional, Tailwind ya incluye un reset) */
+body {
+    margin: 0;
+    padding: 0;
+}
+
+/* Opcional: Estilos para el icono "Salón" (🏢) */
+.text-indigo-500 {
+    color: #6366f1; /* Color de ejemplo de Tailwind indigo-500 */
+}

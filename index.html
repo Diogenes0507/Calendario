@@ -12,10 +12,13 @@
     <script src="https://cdn.tailwindcss.com"></script>
 
     <style>
-        /* styles.css contenido */
         body {
             margin: 0;
             padding: 0;
+        }
+        /* Estilo para los cuadros de día */
+        .calendar-day-box {
+            min-height: 128px; /* Altura mínima para cada día */
         }
     </style>
     
@@ -32,23 +35,30 @@
 
         const { useState, useEffect, useCallback, useMemo } = React;
         
-        // Icono de reemplazo para lucide-react (No disponible en el CDN simple)
+        // Icono de reemplazo
         const Icon = ({ name, className, children }) => {
           const map = {
             Clock: '⏰', Calendar: '📅', CheckSquare: '✅', ListTodo: '📝', Plus: '➕',
             Trash2: '🗑️', Edit: '✏️', Save: '💾', X: '❌', Loader2: '🔄'
           };
-          return <span className={className} style={{ fontSize: '1.25rem' }}>{map[name] || children}</span>;
+          // Usamos un div genérico para los iconos
+          return <span className={className} style={{ fontSize: '1.25rem', lineHeight: '1' }}>{map[name] || children}</span>;
         };
 
         const PrioridadMap = { 1: 'Baja', 2: 'Media', 3: 'Alta' };
+        // Los días ahora se calculan a partir de la fecha. La lista es para referencia.
         const diasOpciones = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
+        
+        const monthNames = [
+            "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+            "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
+        ];
 
         // Define las constantes de Supabase
         const supabaseUrl = 'https://bogoihunfanuoakwxfmb.supabase.co';
         const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJvZ29paHVuZmFudW9ha3d4Zm1iIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA0NTUwMzUsImV4cCI6MjA3NjAzMTAzNX0.sq1GtN_bkXwONunT-_uF9kD7q6MuYjKWKkTLpcoigZM';
 
-        // Inicialización del cliente Supabase (Asumiendo que window.supabase está disponible)
+        // Inicialización del cliente Supabase
         let supabaseClient = null;
         if (window.supabase && window.supabase.createClient) {
             supabaseClient = window.supabase.createClient(supabaseUrl, supabaseAnonKey);
@@ -64,13 +74,19 @@
             const { data, error } = await client
                 .from('horarios')
                 .select('*')
-                .order('dia', { ascending: true })
+                // Se ordena por la nueva columna fecha_inicio y luego por hora
+                .order('fecha_inicio', { ascending: true }) 
                 .order('hora', { ascending: true });
             if (error) {
                 console.error('Error al obtener horarios:', error);
+                // Si la base de datos aún no tiene fecha_inicio, devuelve un error 400. Manejar para que la app no muera.
+                if (error.code === '42703') { // 42703: Columna inexistente
+                    console.error("ADVERTENCIA: La columna 'fecha_inicio' probablemente no existe. Por favor, añádela a la tabla 'horarios' en Supabase.");
+                }
                 return [];
             }
-            return data.map(h => ({ ...h, id_usuario: String(h.id_usuario) }));
+            // Importante: Asegurar que id_usuario es String para evitar errores de comparación.
+            return data.map(h => ({ ...h, id_usuario: String(h.id_usuario) })); 
         };
 
         const createHorario = async (client, newHorario) => {
@@ -125,6 +141,7 @@
         };
 
         const createTarea = async (client, newTarea) => {
+            // Supabase genera el ID automáticamente si 'id' es Primary Key e Identity.
             const { error } = await client
                 .from('tareas')
                 .insert([{ ...newTarea, completada: false }]);
@@ -135,6 +152,11 @@
         };
 
         const updateTarea = async (client, id, updates) => {
+            // Verificación estricta de ID
+            if (!id || (typeof id !== 'number' && typeof id !== 'string')) {
+                console.error('Error de Supabase: ID de tarea faltante o inválido en updateTarea. ID:', id);
+                throw new Error('ID de tarea no proporcionado o inválido. No se puede actualizar.');
+            }
             const { error } = await client
                 .from('tareas')
                 .update(updates)
@@ -144,9 +166,91 @@
                 throw new Error('No se pudo actualizar la tarea.');
             }
         };
+        
+        // ====================================================================================
+        // 3. FUNCIONES DE UTILIDAD
+        // ====================================================================================
+
+        // Función auxiliar para obtener la estructura del calendario
+        const getCalendar = (year, month) => {
+            const firstDayOfMonth = new Date(year, month, 1);
+            const lastDayOfMonth = new Date(year, month + 1, 0);
+            const daysInMonth = lastDayOfMonth.getDate();
+            let startingDay = firstDayOfMonth.getDay(); // 0 (Sunday) to 6 (Saturday)
+            // Ajustar para que la semana empiece en Lunes (0)
+            startingDay = startingDay === 0 ? 6 : startingDay - 1; 
+
+            const weeks = [];
+            let currentWeek = Array(7).fill(null);
+            let dayCounter = 1;
+
+            // Rellenar días vacíos iniciales
+            for (let i = 0; i < startingDay; i++) {
+                currentWeek[i] = { date: null, isCurrentMonth: false };
+            }
+
+            // Rellenar días del mes actual en la primera semana
+            for (let i = startingDay; i < 7; i++) {
+                currentWeek[i] = { 
+                    date: new Date(year, month, dayCounter), 
+                    day: dayCounter,
+                    isCurrentMonth: true 
+                };
+                dayCounter++;
+            }
+            weeks.push(currentWeek);
+
+            // Rellenar semanas completas
+            while (dayCounter <= daysInMonth) {
+                currentWeek = Array(7).fill(null);
+                for (let i = 0; i < 7 && dayCounter <= daysInMonth; i++) {
+                    currentWeek[i] = { 
+                        date: new Date(year, month, dayCounter),
+                        day: dayCounter,
+                        isCurrentMonth: true 
+                    };
+                    dayCounter++;
+                }
+                if (currentWeek.some(d => d && d.isCurrentMonth)) {
+                    weeks.push(currentWeek);
+                }
+            }
+            
+            // Rellenar días vacíos finales en la última semana
+            const lastWeek = weeks[weeks.length - 1];
+            if (lastWeek && lastWeek.some(d => d && d.isCurrentMonth)) {
+                const lastWeekLength = lastWeek.filter(d => d && d.isCurrentMonth).length;
+                for (let i = lastWeekLength; i < 7; i++) {
+                     lastWeek[i] = { date: null, isCurrentMonth: false };
+                }
+            }
+
+            return weeks;
+        };
+        
+        // Función auxiliar para formatear la fecha a YYYY-MM-DD
+        const formatDate = (date) => {
+            if (!(date instanceof Date) || isNaN(date)) return '';
+            const y = date.getFullYear();
+            const m = String(date.getMonth() + 1).padStart(2, '0');
+            const d = String(date.getDate()).padStart(2, '0');
+            return `${y}-${m}-${d}`;
+        };
+
+        // Función auxiliar para obtener el día de la semana a partir de una fecha YYYY-MM-DD
+        const getDayOfWeek = (dateString) => {
+            if (!dateString) return 'Selecciona una fecha';
+            const date = new Date(dateString + 'T00:00:00'); // Añade T00:00:00 para evitar problemas de zona horaria
+            if (isNaN(date)) return 'Fecha inválida';
+            let dayIndex = date.getDay(); // 0 (Sunday) a 6 (Saturday)
+            // Ajustar para que Lunes sea el inicio: 0 (Lun) a 6 (Dom)
+            dayIndex = dayIndex === 0 ? 6 : dayIndex - 1; 
+            return diasOpciones[dayIndex];
+        }
+
 
         // ====================================================================================
-        // 3. COMPONENTES REUTILIZABLES
+        // 4. COMPONENTES REUTILIZABLES (Header, MessageBlock, LoadingSpinner, TareaForm)
         // ====================================================================================
 
         const Header = ({ currentPage, setPage }) => (
@@ -178,6 +282,17 @@
                             <Icon name="ListTodo" className="w-5 h-5 mr-2" />
                             Tareas
                         </button>
+                        <button
+                            onClick={() => setPage('calendario')}
+                            className={`flex items-center px-4 py-2 rounded-full text-sm font-medium transition duration-150 ${
+                                currentPage === 'calendario'
+                                    ? 'bg-indigo-600 text-white shadow-md'
+                                    : 'text-gray-700 hover:bg-indigo-50 hover:text-indigo-600'
+                            }`}
+                        >
+                            <Icon name="Calendar" className="w-5 h-5 mr-2" />
+                            Calendario
+                        </button>
                     </nav>
                 </div>
             </header>
@@ -203,17 +318,131 @@
                 </div>
             );
         };
+        
+        const TareaForm = ({ initialData, onSave, onCancel, isEditing }) => {
+            const [formData, setFormData] = useState(() => ({
+                titulo: initialData?.titulo || '',
+                descripcion: initialData?.descripcion || '',
+                // Asegura el formato YYYY-MM-DD o usa la fecha actual
+                fecha: initialData?.fecha || new Date().toISOString().split('T')[0],
+                prioridad: initialData?.prioridad || 2,
+            }));
+            const [message, setMessage] = useState(null);
+
+            const handleChange = (e) => {
+                const { name, value } = e.target;
+                setFormData(prev => ({
+                    ...prev,
+                    [name]: name === 'prioridad' ? parseInt(value) : value,
+                }));
+            };
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                if (!formData.titulo || !formData.fecha) {
+                    setMessage({ text: 'Título y Fecha son obligatorios.', type: 'error' });
+                    return;
+                }
+                try {
+                    // Si estamos editando, incluimos el ID de la tarea
+                    const dataToSave = isEditing 
+                        ? { ...formData, id: initialData.id } 
+                        : formData;
+                        
+                    await onSave(dataToSave);
+                    setMessage(null);
+                } catch (err) {
+                    setMessage({ text: (err.message || 'Error desconocido al guardar.'), type: 'error' });
+                }
+            };
+
+            return (
+                <div className="bg-white p-6 rounded-xl shadow-xl mb-8 border border-green-200">
+                    <h3 className="text-2xl font-bold mb-4 text-green-700">
+                        {isEditing ? 'Editar Tarea' : 'Nueva Tarea'}
+                    </h3>
+                    {message && <MessageBlock message={message.text} type="error" />}
+                    <form onSubmit={handleSubmit}>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div className="col-span-1">
+                                <label className="block text-sm font-medium text-gray-700">Título</label>
+                                <input
+                                    type="text"
+                                    name="titulo"
+                                    value={formData.titulo}
+                                    onChange={handleChange}
+                                    required
+                                    className="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 p-2 border"
+                                />
+                            </div>
+                            <div className="col-span-1">
+                                <label className="block text-sm font-medium text-gray-700">Fecha Límite</label>
+                                <input
+                                    type="date"
+                                    name="fecha"
+                                    value={formData.fecha}
+                                    onChange={handleChange}
+                                    required
+                                    className="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 p-2 border"
+                                />
+                            </div>
+                            <div className="col-span-1">
+                                <label className="block text-sm font-medium text-gray-700">Prioridad</label>
+                                <select
+                                    name="prioridad"
+                                    value={formData.prioridad}
+                                    onChange={handleChange}
+                                    className="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 p-2 border"
+                                >
+                                    <option value={3}>3 - Alta</option>
+                                    <option value={2}>2 - Media</option>
+                                    <option value={1}>1 - Baja</option>
+                                </select>
+                            </div>
+                            <div className="col-span-2">
+                                <label className="block text-sm font-medium text-gray-700">Descripción</label>
+                                <textarea
+                                    name="descripcion"
+                                    value={formData.descripcion}
+                                    onChange={handleChange}
+                                    rows={3}
+                                    className="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 p-2 border"
+                                />
+                            </div>
+                        </div>
+                        <div className="mt-6 flex space-x-3">
+                            <button
+                                type="submit"
+                                className="flex items-center bg-green-600 text-white px-5 py-2 rounded-lg font-semibold hover:bg-green-700 transition duration-200 shadow-md"
+                            >
+                                <Icon name="Save" className="w-5 h-5 mr-2" />
+                                Guardar Tarea
+                            </button>
+                            <button
+                                type="button"
+                                onClick={onCancel}
+                                className="flex items-center bg-gray-400 text-white px-5 py-2 rounded-lg font-semibold hover:bg-gray-500 transition duration-200"
+                            >
+                                <Icon name="X" className="w-5 h-5 mr-2" />
+                                Cancelar
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            );
+        };
 
 
         // ====================================================================================
-        // 4. GESTIÓN DE HORARIOS (HorarioManager)
+        // 5. GESTIÓN DE HORARIOS (HorarioManager)
         // ====================================================================================
-
+        
         const HorarioManager = ({ supabaseClient }) => {
             const [horarios, setHorarios] = useState([]);
             const [loading, setLoading] = useState(false);
             const [editingHorarioId, setEditingHorarioId] = useState(null);
-            const [formData, setFormData] = useState({ dia: '', hora: '', materia: '', salon: '', profesor: '' });
+            // Se actualiza el estado inicial para incluir fecha_inicio
+            const [formData, setFormData] = useState({ dia: '', fecha_inicio: '', hora: '', materia: '', salon: '', profesor: '' });
             const [message, setMessage] = useState(null);
 
             const fetchHorarios = useCallback(async () => {
@@ -232,34 +461,64 @@
 
             const handleEdit = (horario) => {
                 setEditingHorarioId(horario.id_usuario);
-                setFormData({ dia: horario.dia, hora: horario.hora, materia: horario.materia, salon: horario.salon, profesor: horario.profesor });
+                setFormData({ 
+                    dia: horario.dia, 
+                    fecha_inicio: horario.fecha_inicio || '', // Cargar fecha existente
+                    hora: horario.hora, 
+                    materia: horario.materia, 
+                    salon: horario.salon, 
+                    profesor: horario.profesor 
+                });
                 setMessage(null);
             };
 
             const handleNew = () => {
                 setEditingHorarioId('new');
-                setFormData({ dia: 'Lunes', hora: '08:00', materia: '', salon: '', profesor: '' });
+                // Inicializar con la fecha actual y calcular el día
+                const todayFormatted = new Date().toISOString().split('T')[0];
+                setFormData({ 
+                    dia: getDayOfWeek(todayFormatted), 
+                    fecha_inicio: todayFormatted,
+                    hora: '08:00', 
+                    materia: '', 
+                    salon: '', 
+                    profesor: '' 
+                });
                 setMessage(null);
             };
 
             const handleChange = (e) => {
-                setFormData({ ...formData, [e.target.name]: e.target.value });
+                const { name, value } = e.target;
+                let updatedFormData = { ...formData, [name]: value };
+
+                // Lógica para actualizar el día si se cambia la fecha
+                if (name === 'fecha_inicio') {
+                    updatedFormData = {
+                        ...updatedFormData,
+                        dia: getDayOfWeek(value)
+                    };
+                }
+                
+                setFormData(updatedFormData);
             };
 
             const handleSave = async (e) => {
                 e.preventDefault();
                 if (!supabaseClient) { setMessage({ text: 'El cliente de Supabase aún no está listo.', type: 'error' }); return; }
-                if (!formData.dia || !formData.hora || !formData.materia) {
-                    setMessage({ text: 'Día, Hora y Materia son obligatorios.', type: 'error' });
+                if (!formData.fecha_inicio || !formData.hora || !formData.materia) {
+                    setMessage({ text: 'Fecha, Hora y Materia son obligatorios.', type: 'error' });
                     return;
                 }
 
+                // Asegurar que el día se guarda con el valor calculado de la fecha
+                const dataToSave = { ...formData, dia: getDayOfWeek(formData.fecha_inicio) };
+
                 try {
                     if (editingHorarioId === 'new') {
-                        await createHorario(supabaseClient, formData);
+                        await createHorario(supabaseClient, dataToSave);
                         setMessage({ text: 'Horario creado exitosamente.', type: 'success' });
                     } else if (editingHorarioId) {
-                        await updateHorario(supabaseClient, editingHorarioId, formData);
+                        await updateHorario(supabaseClient, editingHorarioId, dataToSave);
                         setMessage({ text: 'Horario actualizado exitosamente.', type: 'success' });
                     }
                     setEditingHorarioId(null);
@@ -281,11 +540,16 @@
             };
 
             const sortedHorarios = useMemo(() => {
-                const dias = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
+                // Ordenar por fecha_inicio (si existe) y luego por hora
                 return [...horarios].sort((a, b) => {
-                    const diaA = dias.indexOf(a.dia);
-                    const diaB = dias.indexOf(b.dia);
-                    if (diaA !== diaB) return diaA - diaB;
+                    if (a.fecha_inicio && b.fecha_inicio) {
+                        const dateCompare = a.fecha_inicio.localeCompare(b.fecha_inicio);
+                        if (dateCompare !== 0) return dateCompare;
+                    } else if (a.fecha_inicio) {
+                        return -1;
+                    } else if (b.fecha_inicio) {
+                        return 1;
+                    }
                     return a.hora.localeCompare(b.hora);
                 });
             }, [horarios]);
@@ -314,18 +578,37 @@
                                 {editingHorarioId === 'new' ? 'Nuevo Horario' : 'Editar Horario'}
                             </h3>
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                {/* CAMPO FECHA_INICIO (Nuevo) */}
                                 <div>
-                                    <label className="block text-sm font-medium text-gray-700">Día</label>
-                                    <select
-                                        name="dia"
-                                        value={formData.dia}
+                                    <label className="block text-sm font-medium text-gray-700 flex items-center">
+                                        <Icon name="Calendar" className="w-4 h-4 mr-1" />
+                                        Fecha de Inicio
+                                    </label>
+                                    <input
+                                        type="date"
+                                        name="fecha_inicio"
+                                        value={formData.fecha_inicio}
                                         onChange={handleChange}
                                         required
                                         className="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2 border"
-                                    >
-                                        {diasOpciones.map(d => <option key={d} value={d}>{d}</option>)}
-                                    </select>
+                                    />
                                 </div>
+                                
+                                {/* CAMPO DÍA (Calculado/Visual) */}
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 flex items-center">
+                                        Día de la Semana
+                                    </label>
+                                    <input
+                                        type="text"
+                                        name="dia"
+                                        value={formData.dia || 'Selecciona fecha...'}
+                                        readOnly
+                                        className="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-2 border bg-gray-100 text-gray-700 font-semibold"
+                                    />
+                                    <p className="text-xs text-gray-500 mt-1">Se calcula automáticamente con la fecha.</p>
+                                </div>
+                                
                                 <div>
                                     <label className="block text-sm font-medium text-gray-700">Hora</label>
                                     <input
@@ -420,7 +703,12 @@
                                 </div>
                                 <p className="text-sm text-gray-600 mb-3 font-medium">{horario.profesor}</p>
                                 <div className="space-y-1 text-sm">
-                                    <p className="flex items-center text-gray-700"><Icon name="Calendar" className="w-4 h-4 mr-2 text-indigo-500" /> <strong>Día:</strong> {horario.dia}</p>
+                                    {/* Muestra la fecha_inicio */}
+                                    <p className="flex items-center text-gray-700"><Icon name="Calendar" className="w-4 h-4 mr-2 text-indigo-500" /> <strong>Fecha:</strong> {horario.fecha_inicio || 'N/A'}</p>
+                                    <p className="flex items-center text-gray-700">
+                                        <span className="inline-block w-4 h-4 mr-2 text-indigo-500">🗓️</span>
+                                        <strong>Día:</strong> {horario.dia}
+                                    </p>
                                     <p className="flex items-center text-gray-700"><Icon name="Clock" className="w-4 h-4 mr-2 text-indigo-500" /> <strong>Hora:</strong> {horario.hora}</p>
                                     <p className="flex items-center text-gray-700">
                                         <span className="inline-block w-4 h-4 mr-2 text-indigo-500">🏢</span>
@@ -439,116 +727,8 @@
 
 
         // ====================================================================================
-        // 5. GESTIÓN DE TAREAS (TareaManager y TareaForm)
+        // 6. GESTIÓN DE TAREAS (TareaManager)
         // ====================================================================================
-
-        const TareaForm = ({ initialData, onSave, onCancel, isEditing }) => {
-            const [formData, setFormData] = useState(() => ({
-                titulo: initialData?.titulo || '',
-                descripcion: initialData?.descripcion || '',
-                fecha: initialData?.fecha || new Date().toISOString().split('T')[0],
-                prioridad: initialData?.prioridad || 2,
-            }));
-            const [message, setMessage] = useState(null);
-
-            const handleChange = (e) => {
-                const { name, value } = e.target;
-                setFormData(prev => ({
-                    ...prev,
-                    [name]: name === 'prioridad' ? parseInt(value) : value,
-                }));
-            };
-
-            const handleSubmit = async (e) => {
-                e.preventDefault();
-                if (!formData.titulo || !formData.fecha) {
-                    setMessage({ text: 'Título y Fecha son obligatorios.', type: 'error' });
-                    return;
-                }
-                try {
-                    await onSave(formData);
-                    setMessage(null); // Limpiar mensaje de error al guardar con éxito
-                } catch (err) {
-                    setMessage({ text: (err.message || 'Error desconocido al guardar.'), type: 'error' });
-                }
-            };
-
-            return (
-                <div className="bg-white p-6 rounded-xl shadow-xl mb-8 border border-green-200">
-                    <h3 className="text-2xl font-bold mb-4 text-green-700">
-                        {isEditing ? 'Editar Tarea' : 'Nueva Tarea'}
-                    </h3>
-                    {message && <MessageBlock message={message.text} type="error" />}
-                    <form onSubmit={handleSubmit}>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div className="col-span-1">
-                                <label className="block text-sm font-medium text-gray-700">Título</label>
-                                <input
-                                    type="text"
-                                    name="titulo"
-                                    value={formData.titulo}
-                                    onChange={handleChange}
-                                    required
-                                    className="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 p-2 border"
-                                />
-                            </div>
-                            <div className="col-span-1">
-                                <label className="block text-sm font-medium text-gray-700">Fecha Límite</label>
-                                <input
-                                    type="date"
-                                    name="fecha"
-                                    value={formData.fecha}
-                                    onChange={handleChange}
-                                    required
-                                    className="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 p-2 border"
-                                />
-                            </div>
-                            <div className="col-span-1">
-                                <label className="block text-sm font-medium text-gray-700">Prioridad</label>
-                                <select
-                                    name="prioridad"
-                                    value={formData.prioridad}
-                                    onChange={handleChange}
-                                    className="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 p-2 border"
-                                >
-                                    <option value={3}>3 - Alta</option>
-                                    <option value={2}>2 - Media</option>
-                                    <option value={1}>1 - Baja</option>
-                                </select>
-                            </div>
-                            <div className="col-span-2">
-                                <label className="block text-sm font-medium text-gray-700">Descripción</label>
-                                <textarea
-                                    name="descripcion"
-                                    value={formData.descripcion}
-                                    onChange={handleChange}
-                                    rows={3}
-                                    className="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 p-2 border"
-                                />
-                            </div>
-                        </div>
-                        <div className="mt-6 flex space-x-3">
-                            <button
-                                type="submit"
-                                className="flex items-center bg-green-600 text-white px-5 py-2 rounded-lg font-semibold hover:bg-green-700 transition duration-200 shadow-md"
-                            >
-                                <Icon name="Save" className="w-5 h-5 mr-2" />
-                                Guardar Tarea
-                            </button>
-                            <button
-                                type="button"
-                                onClick={onCancel}
-                                className="flex items-center bg-gray-400 text-white px-5 py-2 rounded-lg font-semibold hover:bg-gray-500 transition duration-200"
-                            >
-                                <Icon name="X" className="w-5 h-5 mr-2" />
-                                Cancelar
-                            </button>
-                        </div>
-                    </form>
-                </div>
-            );
-        };
-
 
         const TareaManager = ({ supabaseClient }) => {
             const [tareas, setTareas] = useState([]);
@@ -581,7 +761,14 @@
 
             const handleUpdate = async (updatedData) => {
                 if (!supabaseClient) { setMessage({ text: 'El cliente de Supabase aún no está listo.', type: 'error' }); return; }
-                if (!editingTarea) return;
+                
+                const id = updatedData.id; 
+                
+                if (!id) { 
+                    setMessage({ text: 'Error: No se puede actualizar una tarea sin ID válido.', type: 'error' }); 
+                    setEditingTarea(null);
+                    return; 
+                }
 
                 const updates = {
                     titulo: updatedData.titulo,
@@ -589,21 +776,54 @@
                     fecha: updatedData.fecha,
                     prioridad: updatedData.prioridad,
                 };
-                await updateTarea(supabaseClient, editingTarea.id, updates);
-                setMessage({ text: 'Tarea actualizada exitosamente.', type: 'success' });
-                setEditingTarea(null);
-                await fetchTareas();
-            };
-
-            const handleToggleComplete = async (tarea) => {
-                if (!supabaseClient) { setMessage({ text: 'El cliente de Supabase aún no está listo.', type: 'error' }); return; }
+                
                 try {
-                    const updates = { completada: !tarea.completada };
-                    await updateTarea(supabaseClient, tarea.id, updates);
-                    setMessage({ text: `Tarea marcada como ${updates.completada ? 'completada' : 'pendiente'}.`, type: 'success' });
+                    await updateTarea(supabaseClient, id, updates); 
+                    setMessage({ text: 'Tarea actualizada exitosamente.', type: 'success' });
+                    setEditingTarea(null);
                     await fetchTareas();
                 } catch (err) {
-                    setMessage({ text: (err.message || 'Error al actualizar estado.'), type: 'error' });
+                    setMessage({ text: (err.message || 'Error desconocido al actualizar.'), type: 'error' });
+                }
+            };
+
+            // FUNCIÓN MEJORADA: Implementa actualización optimista (sin esperar fetchTareas)
+            const handleToggleComplete = async (tarea) => {
+                if (!supabaseClient) { setMessage({ text: 'El cliente de Supabase aún no está listo.', type: 'error' }); return; }
+                
+                if (!tarea.id) { 
+                    setMessage({ text: 'Error: No se puede cambiar el estado de una tarea sin ID válido.', type: 'error' }); 
+                    return; 
+                }
+
+                const newCompletedStatus = !tarea.completada;
+                
+                // 1. Optimistic Update (Actualización Inmediata en el UI)
+                setTareas(prevTareas => 
+                    prevTareas.map(t => 
+                        t.id === tarea.id ? { ...t, completada: newCompletedStatus } : t
+                    )
+                );
+
+                try {
+                    // 2. Database Update
+                    const updates = { completada: newCompletedStatus };
+                    await updateTarea(supabaseClient, tarea.id, updates);
+
+                    // 3. Post-Update UI Feedback & Re-fetch
+                    setMessage({ text: `Tarea marcada como ${newCompletedStatus ? 'completada' : 'pendiente'}.`, type: 'success' });
+                    
+                    // Solo refrescamos la lista si la tarea ha cambiado de estado, para reordenar.
+                    await fetchTareas(); 
+
+                } catch (err) {
+                    // 4. Rollback (Si falla la DB, revertir el cambio en el UI)
+                    setTareas(prevTareas => 
+                        prevTareas.map(t => 
+                            t.id === tarea.id ? { ...t, completada: !newCompletedStatus } : t
+                        )
+                    );
+                    setMessage({ text: (err.message || 'Error al actualizar estado. Se revirtió el cambio.'), type: 'error' });
                 }
             };
 
@@ -662,23 +882,24 @@
                             <div
                                 key={tarea.id || index}
                                 className={`flex items-center bg-white p-5 rounded-xl shadow-md border-l-4 transition duration-200 ${
-                                    tarea.completada ? 'border-gray-400 opacity-60' : 'border-green-500 hover:shadow-lg'
+                                    !!tarea.completada ? 'border-gray-400 opacity-80' : 'border-green-500 hover:shadow-lg'
                                 }`}
                             >
                                 <button
+                                    // Se usa tarea.id para el key
                                     onClick={() => handleToggleComplete(tarea)}
                                     className={`p-2 rounded-full mr-4 transition duration-150 ${
-                                        tarea.completada
+                                        !!tarea.completada
                                             ? 'bg-green-500 text-white hover:bg-green-600'
                                             : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
                                     }`}
-                                    title={tarea.completada ? 'Marcar como Pendiente' : 'Marcar como Completada'}
+                                    title={!!tarea.completada ? 'Marcar como Pendiente' : 'Marcar como Completada'}
                                 >
                                     <Icon name="CheckSquare" className="w-6 h-6" />
                                 </button>
 
                                 <div className="flex-1 min-w-0">
-                                    <h4 className={`text-lg font-semibold ${tarea.completada ?
+                                    <h4 className={`text-lg font-semibold ${!!tarea.completada ?
                                         'line-through text-gray-500' : 'text-gray-800'}`}>
                                         {tarea.titulo}
                                     </h4>
@@ -687,11 +908,23 @@
                                 </div>
 
                                 <div className="flex flex-col items-end space-y-1 ml-4">
+                                    {/* Etiqueta de Prioridad */}
                                     <span
-                                        className={`text-xs font-bold px-3 py-1 rounded-full ${getPrioridadClasses(tarea.prioridad, tarea.completada)}`}
+                                        className={`text-xs font-bold px-3 py-1 rounded-full ${getPrioridadClasses(tarea.prioridad, !!tarea.completada)}`}
                                     >
-                                        {getPrioridadText(tarea.prioridad)}
+                                        Prioridad: {getPrioridadText(tarea.prioridad)}
                                     </span>
+
+                                    {/* Etiqueta de Estado (PENDIENTE/COMPLETADA) - ¡Nueva mejora! */}
+                                    <span
+                                        className={`text-xs font-bold px-3 py-1 rounded-full shadow-sm ${!!tarea.completada 
+                                            ? 'bg-green-100 text-green-700 border border-green-300' 
+                                            : 'bg-red-100 text-red-700 border border-red-300'
+                                        }`}
+                                    >
+                                        {!!tarea.completada ? 'COMPLETADA' : 'PENDIENTE'}
+                                    </span>
+                                    
                                     <p className="flex items-center text-sm text-gray-600">
                                         <Icon name="Calendar" className="w-4 h-4 mr-1" />
                                         {tarea.fecha}
@@ -702,7 +935,7 @@
                                     onClick={() => { setEditingTarea(tarea); setShowNewForm(false); setMessage(null); }}
                                     className="ml-4 p-2 rounded-full text-blue-600 hover:bg-blue-100 transition duration-150"
                                     title="Editar Tarea"
-                                    disabled={tarea.completada}
+                                    disabled={!!tarea.completada} 
                                 >
                                     <Icon name="Edit" className="w-5 h-5" />
                                 </button>
@@ -712,10 +945,267 @@
                 </div>
             );
         };
+        
+        // ====================================================================================
+        // 7. VISTA DE CALENDARIO (CalendarView)
+        // ====================================================================================
+
+        const CalendarView = ({ supabaseClient }) => {
+            const today = useMemo(() => new Date(), []);
+            const [currentDate, setCurrentDate] = useState(today);
+            const [tareas, setTareas] = useState([]);
+            const [loading, setLoading] = useState(false);
+            const [editingTarea, setEditingTarea] = useState(null);
+            const [message, setMessage] = useState(null);
+
+            const currentYear = currentDate.getFullYear();
+            const currentMonth = currentDate.getMonth(); // 0-indexed
+
+            const fetchTareas = useCallback(async () => {
+                if (!supabaseClient) return;
+                setLoading(true);
+                const data = await getTareas(supabaseClient);
+                setTareas(data);
+                setLoading(false);
+            }, [supabaseClient]);
+
+            useEffect(() => {
+                if (supabaseClient) {
+                    fetchTareas();
+                }
+            }, [fetchTareas, supabaseClient]);
+            
+            // FUNCIÓN MEJORADA: Implementa actualización optimista
+            const handleToggleComplete = async (tarea) => {
+                if (!supabaseClient) { setMessage({ text: 'El cliente de Supabase aún no está listo.', type: 'error' }); return; }
+                
+                if (!tarea.id) { 
+                    setMessage({ text: 'Error: No se puede cambiar el estado de una tarea sin ID válido.', type: 'error' }); 
+                    return; 
+                }
+
+                const newCompletedStatus = !tarea.completada;
+
+                // 1. Optimistic Update
+                setTareas(prevTareas => 
+                    prevTareas.map(t => 
+                        t.id === tarea.id ? { ...t, completada: newCompletedStatus } : t
+                    )
+                );
+
+                try {
+                    // 2. Database Update
+                    const updates = { completada: newCompletedStatus };
+                    await updateTarea(supabaseClient, tarea.id, updates);
+
+                    // 3. Post-Update UI Feedback
+                    setMessage({ text: `Tarea marcada como ${newCompletedStatus ? 'completada' : 'pendiente'}.`, type: 'success' });
+                    
+                    // El fetchTareas se deja para sincronización robusta.
+                    await fetchTareas(); 
+
+                } catch (err) {
+                    // 4. Rollback
+                    setTareas(prevTareas => 
+                        prevTareas.map(t => 
+                            t.id === tarea.id ? { ...t, completada: !newCompletedStatus } : t
+                        )
+                    );
+                    setMessage({ text: (err.message || 'Error al actualizar estado. Se revirtió el cambio.'), type: 'error' });
+                }
+            };
+            
+            // Navegación
+            const goToPreviousMonth = () => {
+                setCurrentDate(prevDate => new Date(prevDate.getFullYear(), prevDate.getMonth() - 1, 1));
+            };
+
+            const goToNextMonth = () => {
+                setCurrentDate(prevDate => new Date(prevDate.getFullYear(), prevDate.getMonth() + 1, 1));
+            };
+
+            const calendarWeeks = useMemo(() => getCalendar(currentYear, currentMonth), [currentYear, currentMonth]);
+            
+            // Mapeo de tareas por fecha (YYYY-MM-DD)
+            const tasksByDay = useMemo(() => {
+                const map = {};
+                tareas.forEach(tarea => {
+                    const dateKey = tarea.fecha;
+                    if (dateKey) {
+                        if (!map[dateKey]) {
+                            map[dateKey] = [];
+                        }
+                        map[dateKey].push(tarea);
+                    }
+                });
+                return map;
+            }, [tareas]);
+
+            // Función para renderizar las tareas dentro de cada día
+            const renderTaskInDay = (dayData) => {
+                if (!dayData || !dayData.date || dayData.date.getMonth() !== currentMonth) return null;
+                
+                const dateKey = formatDate(dayData.date);
+                // Ordenar para mostrar pendientes primero
+                const dailyTasks = (tasksByDay[dateKey] || []).sort((a, b) => {
+                    if (a.completada && !b.completada) return 1;
+                    if (!a.completada && b.completada) return -1;
+                    return b.prioridad - a.prioridad;
+                });
+                
+                return (
+                    <div className="space-y-1 mt-1 overflow-y-auto max-h-[80px]">
+                        {dailyTasks.map(tarea => (
+                            <div 
+                                key={tarea.id} 
+                                className={`text-xs p-1 rounded-sm transition duration-100 border border-transparent 
+                                    ${!!tarea.completada ? 'bg-gray-200 line-through text-gray-600 opacity-90' : 'bg-green-100 text-green-800 hover:border-green-400'}`
+                                }
+                            >
+                                <button
+                                    className="inline-block float-left mr-1 p-0.5 rounded-full hover:bg-gray-300 disabled:opacity-50"
+                                    onClick={() => handleToggleComplete(tarea)}
+                                    title={!!tarea.completada ? 'Marcar como pendiente' : 'Marcar como completada'}
+                                >
+                                    <Icon name="CheckSquare" className="w-3 h-3 text-green-700" />
+                                </button>
+                                
+                                <span className="font-medium text-left truncate block ml-4">
+                                    {tarea.titulo} 
+                                    {/* Etiqueta de Estado en Calendario - ¡Nueva mejora! */}
+                                    <span 
+                                        className={`text-[9px] ml-1 px-1 rounded font-bold align-middle whitespace-nowrap shadow-sm ${!!tarea.completada 
+                                            ? 'bg-green-400 text-white' 
+                                            : 'bg-red-400 text-white'
+                                        }`}
+                                    >
+                                        {!!tarea.completada ? 'COMPLETADA' : 'PENDIENTE'}
+                                    </span>
+                                </span>
+                                
+                                <button 
+                                    className="float-right text-gray-500 hover:text-blue-600 disabled:opacity-50"
+                                    onClick={(e) => { e.stopPropagation(); setEditingTarea(tarea); setMessage(null); }}
+                                    disabled={!!tarea.completada}
+                                >
+                                    <Icon name="Edit" className="w-3 h-3" />
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                );
+            };
+
+            const handleUpdateFromCalendar = async (updatedData) => {
+                if (!supabaseClient || !updatedData.id) throw new Error("ID de tarea no válido para actualización desde calendario.");
+                
+                // Usar el ID que viene en updatedData
+                const id = updatedData.id;
+
+                const updates = {
+                    titulo: updatedData.titulo,
+                    descripcion: updatedData.descripcion,
+                    fecha: updatedData.fecha,
+                    prioridad: updatedData.prioridad,
+                };
+                
+                // Optimistic Update en Calendar
+                 setTareas(prevTareas => 
+                    prevTareas.map(t => 
+                        t.id === id ? { ...t, ...updates } : t
+                    )
+                );
+                
+                try {
+                    await updateTarea(supabaseClient, id, updates); 
+                    setMessage({ text: 'Tarea actualizada exitosamente.', type: 'success' });
+                    setEditingTarea(null);
+                    await fetchTareas(); // Para asegurar el reordenamiento si la fecha cambió
+                } catch (err) {
+                    setMessage({ text: (err.message || 'Error al actualizar tarea. La tarea en el calendario podría no reflejar los cambios.'), type: 'error' });
+                    // Si falla, volvemos a cargar para tener el estado correcto.
+                    await fetchTareas(); 
+                }
+            };
+
+
+            if (!supabaseClient) return <MessageBlock message="Error: El cliente de Supabase no se pudo inicializar." type="error" />;
+            if (loading) return <LoadingSpinner />;
+
+            return (
+                <div className="p-8 max-w-7xl mx-auto">
+                    <h2 className="text-4xl font-extrabold text-gray-800 mb-6">Vista Calendario Mensual</h2>
+                    
+                    {message && <MessageBlock message={message.text} type={message.type} />}
+                    
+                    {(editingTarea) && (
+                        <TareaForm
+                            initialData={editingTarea}
+                            onSave={handleUpdateFromCalendar} // Usamos la función de update para el calendario
+                            onCancel={() => setEditingTarea(null)}
+                            isEditing={true}
+                        />
+                    )}
+
+                    <div className="bg-white p-6 rounded-xl shadow-xl border border-gray-100">
+                        <div className="flex justify-between items-center mb-6">
+                            <button onClick={goToPreviousMonth} className="p-2 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold">
+                                &#x25C0; Anterior
+                            </button>
+                            <div className="text-center">
+                                <span className="text-sm font-medium text-indigo-500 block">
+                                    MES: {currentMonth + 1}
+                                </span>
+                                <h3 className="text-4xl font-bold text-gray-800 tracking-wider mb-1">{monthNames[currentMonth]}</h3>
+                                <p className="text-xl text-indigo-600 font-semibold">{currentYear}</p>
+                            </div>
+                            <button onClick={goToNextMonth} className="p-2 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold">
+                                Siguiente &#x25B6;
+                            </button>
+                        </div>
+                        
+                        {/* Días de la semana */}
+                        <div className="grid grid-cols-7 text-center font-extrabold text-sm text-gray-600 border-b-2 border-indigo-200 pb-2 mb-0">
+                            {['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'].map(day => (
+                                <div key={day} className="py-2">{day}</div>
+                            ))}
+                        </div>
+
+                        {/* Grid del Calendario */}
+                        {calendarWeeks.map((week, weekIndex) => (
+                            <div key={weekIndex} className="grid grid-cols-7 border-t border-gray-200">
+                                {week.map((dayData, dayIndex) => {
+                                    // Generar una clave única: Usa la fecha si existe, si no, usa un índice combinado.
+                                    const cellKey = dayData && dayData.date 
+                                        ? formatDate(dayData.date) 
+                                        : `empty-${weekIndex}-${dayIndex}`;
+
+                                    return (
+                                        <div 
+                                            key={cellKey} 
+                                            className={`calendar-day-box p-2 border-r border-b border-gray-200 relative overflow-hidden ${
+                                                !dayData || !dayData.isCurrentMonth
+                                                    ? 'bg-gray-50 text-gray-400' 
+                                                    : 'bg-white'
+                                            } ${formatDate(dayData?.date) === formatDate(today) ? 'bg-indigo-50 border-indigo-400 shadow-inner' : ''}`}
+                                        >
+                                            <span className={`text-lg font-bold block ${formatDate(dayData?.date) === formatDate(today) ? 'text-indigo-700' : 'text-gray-900'}`}>
+                                                {dayData && dayData.day}
+                                            </span>
+                                            {renderTaskInDay(dayData)}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
 
 
         // ====================================================================================
-        // 6. COMPONENTE PRINCIPAL (App)
+        // 8. COMPONENTE PRINCIPAL (App)
         // ====================================================================================
 
         const App = () => {
@@ -730,8 +1220,10 @@
                             <MessageBlock message="Error de Configuración: El cliente de Supabase no se inicializó. Revisa los CDN y la clave." type="error" />
                         ) : currentPage === 'horarios' ? (
                             <HorarioManager supabaseClient={client} />
-                        ) : (
+                        ) : currentPage === 'tareas' ? (
                             <TareaManager supabaseClient={client} />
+                        ) : (
+                            <CalendarView supabaseClient={client} />
                         )}
                     </main>
                 </div>
@@ -739,20 +1231,15 @@
         }
 
         // ====================================================================================
-        // 7. MONTAJE DE LA APLICACIÓN
-        // Ejecución inmediata del montaje cuando el script ha sido parseado.
+        // 9. MONTAJE DE LA APLICACIÓN
         // ====================================================================================
         try {
             const rootElement = document.getElementById('root');
             if (rootElement) {
                 ReactDOM.createRoot(rootElement).render(<App />);
-            } else {
-                console.error("El elemento 'root' no se encontró en el DOM.");
-                // Opcional: mostrar un mensaje de error al usuario aquí
-            }
+            } 
         } catch (e) {
             console.error("Error al montar la aplicación React:", e);
-            // Mostrar un mensaje de error más visible si el montaje falla
             const rootElement = document.getElementById('root');
             if (rootElement) {
                 rootElement.innerHTML = `
